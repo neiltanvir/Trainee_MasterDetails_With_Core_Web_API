@@ -1,0 +1,338 @@
+1. Package:
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="7.0.15" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.1">
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+
+2. Table Creation:
+CREATE TABLE [dbo].[User]
+(
+    [UserId] INT NOT NULL PRIMARY KEY IDENTITY (1, 1),
+    [UserName]  VARCHAR (50)  NOT NULL,
+    [EmailId]   VARCHAR (MAX) NOT NULL,
+    [Password]  VARCHAR (MAX) NOT NULL,
+)
+
+CREATE TABLE [dbo].[Trainee]
+(
+    [TraineeId] INT NOT NULL PRIMARY KEY Identity(200,1),
+    [TraineeName] VARCHAR(50) NOT NULL,
+    [IsRegular] BIT NOT NULL,
+    [BirhDate] DATETIME NOT NULL,
+    [ImageName] VARCHAR(255) NULL,
+    [ImageUrl] VARCHAR(255) NULL,
+)
+CREATE TABLE [dbo].[Course]
+(
+    [CourseId] INT NOT NULL PRIMARY KEY IDENTITY, 
+    [CourseName] VARCHAR(50) NOT NULL, 
+    [Duration] INT NOT NULL, 
+    [TraineeId] INT NULL REFERENCES Trainee(TraineeId)
+	On DELETE CASCADE
+	On UPDATE CASCADE
+)
+
+3. NuGet Package Manager (Package Manager Console):
+//<InvariantGlobalization>false</InvariantGlobalization>
+Scaffold-DbContext "Server=(localdb)\MSSQLLocalDB; Database=TraineeDB; Trusted_Connection=true; TrustServerCertificate=true; MultipleActiveResultSets=True; Integrated Security=true" Microsoft.EntityFrameworkCore.Sqlserver -outputDir Models
+
+4. AapSetting:
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "Con": "Server=(localdb)\\MSSQLLocalDB; Database=TraineeDB; Trusted_Connection=True; TrustServerCertificate=True; Integrated Security=True; MultipleActiveResultSets=True;"
+  },
+  "Jwt": {
+    "Key": "xabcdefghijklmnopqrstuvwxyzabcdefghijklmnop",
+    "Issuer": "JWTAuthenticationServer",
+    "Audience": "JWTAuthenticationClient",
+    "Subject": "JWTServiceAccessToken"
+  }
+
+5. Program:
+// Add services to the container.
+
+builder.Services.AddDbContext<CoreDbContext>(options => options.UseSqlServer
+(builder.Configuration.GetConnectionString("Con")));
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
+{
+    options.RequireHttpsMetadata = false;
+    options.SaveToken = true;
+    options.TokenValidationParameters = new TokenValidationParameters()
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes
+        (builder.Configuration["Jwt:Key"]))
+    };
+});
+
+var Cul = new CultureInfo("en-US");
+CultureInfo.DefaultThreadCurrentCulture = Cul;
+CultureInfo.DefaultThreadCurrentUICulture = Cul;
+app.UseStaticFiles();
+app.UseAuthentication();
+app.UseAuthorization();
+
+6. Create Folder: DTOs
+public class UserModel
+{
+
+    public int Id { get; set; }
+    public required string UserName { get; set; }
+    public required string Email { get; set; }
+    public required string Password { get; set; }
+    public string? UserMessage { get; set; }
+    public string? AccessToken { get; set; }
+
+}
+
+Another Class:
+
+public class Common
+ {
+     public int TraineeId { get; set; }
+
+     public string? TraineeName { get; set; }
+
+     public bool IsRegular { get; set; }
+
+     public DateTime BirhDate { get; set; }
+
+     public IFormFile? ImageFile { get; set; }
+     public string? ImageName { get; set; }
+     public string? Courses { get; set; }
+ }
+
+7. Controller For Token:
+    [Route("api/[controller]")]
+    [Authorize]
+    [ApiController]
+    public class LoginController : ControllerBase
+    {
+        private readonly TraineeDbContext _db;
+        IConfiguration _configuration;
+
+        public LoginController(TraineeDbContext db, IConfiguration configuration)
+        {
+            _db = db;
+            _configuration = configuration;
+        }
+
+        [AllowAnonymous]
+        [HttpPost]
+        [Route("token")]
+        public async Task<IActionResult> PostLoginDetails(UserModel _userData)
+        {
+            if (_userData != null)
+            {
+                var loginCheck = _db.Users.Where(x => x.EmailId == _userData.Email && x.Password == _userData.Password).FirstOrDefault();
+                if (loginCheck == null)
+                {
+                    return BadRequest("Invalid crediantials.");
+                }
+                else
+                {
+                    _userData.UserMessage = "Login successfull.";
+                    var claims = new[]
+                    {
+                        new Claim(JwtRegisteredClaimNames.Sub,_configuration["Jwt:Subject"]),
+                        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                        new Claim(JwtRegisteredClaimNames.Iat, DateTime.UtcNow.ToString()),
+                        new Claim("UserId", _userData.Id.ToString()),
+                        new Claim("DisplayName", _userData.UserName.ToString()),
+                        new Claim("UserName", _userData.Email.ToString()),
+                        new Claim("Email", _userData.Email)
+                    };
+                    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));
+                    var signIn = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+                    var token = new JwtSecurityToken(
+                        _configuration["Jwt:Issuer"],
+                        _configuration["Jwt:Audience"],
+                        claims,
+                        expires: DateTime.UtcNow.AddMinutes(30),
+                        signingCredentials: signIn
+                        );
+                    _userData.AccessToken = new JwtSecurityTokenHandler().WriteToken(token);
+                    return Ok(_userData);
+                }
+            }
+            else
+            {
+                return BadRequest("No data posted.");
+            }
+        }
+    }
+
+8. Controller For Trainee:
+
+    [Route("api/[controller]")]
+    [ApiController]
+    [Authorize]
+    public class TraineeController : ControllerBase
+    {
+        private readonly TraineeDbContext _db;
+        private IWebHostEnvironment _e;
+
+        public TraineeController(TraineeDbContext db, IWebHostEnvironment e)
+        {
+            _db = db;
+            _e = e;
+        }
+
+        [HttpGet]
+        public IActionResult GetAllTrainee()
+        {
+            List<Trainee> trainees = _db.Trainees.Include(x => x.Courses).ToList();  //EgerLoading
+            string JsonString = JsonConvert.SerializeObject(trainees, Formatting.Indented, new JsonSerializerSettings
+            {
+                ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+
+            });
+            return Content(JsonString, "application/Json");
+        }
+
+        [HttpGet("{id}")]
+        public IActionResult GetTraineeById(int id)
+        {
+
+            Trainee trainee = _db.Trainees.Include(x => x.Courses).FirstOrDefault(x => x.TraineeId == id);
+
+            if (trainee == null)
+            {
+                return NotFound("Empty Data");
+            }
+
+            string jsonstring = JsonConvert.SerializeObject(trainee, Formatting.Indented, new JsonSerializerSettings
+            {
+                ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+            });
+            return Content(jsonstring, "application/Json");
+        }
+
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteTrainee(int id)
+        {
+            var tr = await _db.Trainees.FindAsync(id);
+            if (tr == null)
+            {
+                return BadRequest("Trainee not found.");
+            }
+            _db.Trainees.Remove(tr);
+            _db.SaveChanges();
+            return Ok("Deleted SuccessFully.");
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> PostTrainees([FromForm] Common common)
+        {
+            string FN = common.ImageName + ".jpg";
+            string Url = "\\Upload\\" + FN;
+            if (common.ImageFile?.Length > 0)
+            {
+                if (!Directory.Exists(_e.WebRootPath + "\\Upload\\"))
+                {
+                    Directory.CreateDirectory(_e.WebRootPath + "\\Upload\\");
+                }
+                using (FileStream fileStream = System.IO.File.Create(_e.WebRootPath + "\\Upload\\" + common.ImageFile.FileName))
+                {
+                    common.ImageFile.CopyTo(fileStream);
+                    fileStream.Flush();
+                }
+            }
+            Trainee trainee = new Trainee();
+            trainee.TraineeName = common.TraineeName;
+            trainee.IsRegular = common.IsRegular;
+            trainee.BirhDate = common.BirhDate;
+            trainee.ImageName = FN;
+            trainee.ImageUrl = Url;
+            _db.Trainees.Add(trainee);
+            await _db.SaveChangesAsync();
+            var tr = _db.Trainees.FirstOrDefault(x => x.TraineeName == common.TraineeName);
+            int trid = tr.TraineeId;
+            List<Course> list = JsonConvert.DeserializeObject<List<Course>>(common.Courses);
+            AddExperiences(trid, list);
+            await _db.SaveChangesAsync();
+            return Ok("Saved SuccessFully.");
+        }
+
+        private void AddExperiences(int trid, List<Course>? list)
+        {
+            {
+                foreach (var item in list)
+                {
+                    Course course = new Course()
+                    {
+                        TraineeId = trid,
+                        Duration = item.Duration,
+                        CourseName = item.CourseName,
+                    };
+                    _db.Courses.Add(course);
+                    _db.SaveChanges();
+                }
+            }
+        }
+        [HttpPut("{id}")]
+        public async Task<IActionResult> PutTrainees(int id, [FromForm] Common common)
+        {
+            var trainee = await _db.Trainees.FindAsync(id);
+            if (id != common.TraineeId)
+            {
+                return BadRequest();
+            }
+            if (trainee == null)
+            {
+                return NotFound("Trainee not found.");
+            }
+            string fileName = common.ImageName + ".jpg";
+            string imageUrl = "\\Upload\\" + fileName;
+            if (common.ImageFile?.Length > 0)
+            {
+                if (!Directory.Exists(_e.WebRootPath + "\\Upload\\"))
+                {
+                    Directory.CreateDirectory(_e.WebRootPath + "\\Upload\\");
+                }
+                using (FileStream fileStream = System.IO.File.Create(_e.WebRootPath + "\\Upload\\" + common.ImageFile.FileName))
+                {
+                    common.ImageFile.CopyTo(fileStream);
+                    fileStream.Flush();
+                }
+            }
+
+            trainee.TraineeName = common.TraineeName;
+            trainee.IsRegular = common.IsRegular;
+            trainee.BirhDate = common.BirhDate;
+            trainee.ImageName = fileName;
+            trainee.ImageUrl = imageUrl;
+
+            var exis = _db.Courses.Where(x => x.TraineeId == id);
+            _db.Courses.RemoveRange(exis);
+
+            List<Course> list = JsonConvert.DeserializeObject<List<Course>>(common.Courses);
+            AddExperiences(trainee.TraineeId, list);
+            await _db.SaveChangesAsync();
+            return Ok("Updated SuccessFully");
+        }
+    }
+
+9. api/login/token
+{
+  "userName": "tanvir",
+  "email": "t@gmail.com",
+  "password": "1234"
+}
+
+10. api/trainee
+{
+    "TraineeId": 200,
+    "TraineeName": "Ahmmed",
+    "IsRegular": true,
+    "BirhDate": "12-12-2024",
+    "ImageName": "px",
+    "ImageUrl": "\\Upload\\px.jpg",
+    "Courses": [{"courseName":"cSharp","Duration":980}]
+}
